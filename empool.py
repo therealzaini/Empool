@@ -71,7 +71,7 @@ class Empool(nn.Module):
         x = self.bottleneck(x)
 
         x = self.decoder(
-            x_coarse=x,
+            x_bott=x,
             state_stack=state_stack,
         )
 
