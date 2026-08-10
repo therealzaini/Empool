@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from typing import List
 
-from decoder_block import DecoderBlock
+from decoder.decoder_block import DecoderBlock
 from encoder.encoder_state import EncoderState
 
 class MultiDecoder(nn.Module):

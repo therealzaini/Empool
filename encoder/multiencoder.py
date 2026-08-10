@@ -3,8 +3,8 @@ import torch.nn as nn
 
 from typing import List
 
-from encoder_block import EncoderBlock
-from encoder_state import EncoderState
+from encoder.encoder_block import EncoderBlock
+from encoder.encoder_state import EncoderState
 from utils.topology_stats import TopologyStats
 
 class MultiEncoder(nn.Module):
