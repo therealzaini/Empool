@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 
-from ..unpools.feat_unpool import XUnpool
-from ..message_passing.message_passing import MessagePassing
+from unpools.feat_unpool import XUnpool
+from message_passing.message_passing import MessagePassing
 
 class DecoderBlock(nn.Module):
     def __init__(

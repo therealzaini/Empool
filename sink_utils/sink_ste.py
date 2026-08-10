@@ -95,7 +95,7 @@ class LocalizedHeatDissipationSurrogate(nn.Module):
             dtype = dtype
         )
 
-        max_score.scatter_reduce_(0, node, score, reduce = "max", include_self = True)
+        max_score.scatter_reduce_(0, node, score, reduce = "amax", include_self = True)
         e_to_the_score = torch.exp((score - max_score[node]) / self.tau)
 
         sum_of_exps = torch.zeros(num_nodes, device = device, dtype = dtype)

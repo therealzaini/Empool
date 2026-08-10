@@ -26,3 +26,4 @@ flowchart TD
     dec_out -->|"Node classification"| nc
     dec_out -->|"Edge classification"| fcat
     fcat --> ec
+```

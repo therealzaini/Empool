@@ -44,18 +44,33 @@ class TensorInitializer:
         return degree
 
     def initialize(
-            self,
-            edge_index: Tensor,
-            num_nodes: int
+        self,
+        edge_index: torch.Tensor,
+        reference: torch.Tensor,
     ):
-        device = edge_index.device
-        degree = self._validate_alpha_and_get_degree(self.alpha, edge_index, num_nodes)
-        dtype = edge_index.dtype
+        num_nodes = reference.size(0)
+        device = reference.device
+        dtype = reference.dtype
 
-        degree.to(device = device)
+        # Degrees are integer-valued, but are only used
+        # to determine d_max.
+        row = edge_index[0]
 
-        x_seed = torch.randn(num_nodes, device = device, dtype = dtype)
+        degree = torch.bincount(
+            row,
+            minlength=num_nodes,
+        )
 
+        d_max = degree.max().item()
+
+        # Random Gaussian seed
+        x_seed = torch.randn(
+            num_nodes,
+            device=device,
+            dtype=dtype,
+        )
+
+        # Center
         x_seed = x_seed - x_seed.mean()
 
         x_seed = x_seed / x_seed.norm(p=2).clamp_min(torch.finfo(dtype).eps)

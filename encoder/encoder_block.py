@@ -1,13 +1,13 @@
 import torch
 import torch.nn as nn
 
-from ..message_passing.message_passing import MessagePassing
-from ..initializer_utils.tensor_initializer import TensorInitializer
-from emhead import Emhead
-from ..sink_utils.sink_ste import LocalizedHeatDissipationSurrogate as STE
-from ..pools.sparse_feat_pool import SparseXPool
-from ..pools.sparse_graph_pool import SparseGPool
-from ..sink_utils.sink import construct_sink
+from message_passing.message_passing import MessagePassing
+from initializer_utils.tensor_initializer import TensorInitializer
+from encoder.emhead import Emhead
+from sink_utils.sink_ste import LocalizedHeatDissipationSurrogate as STE
+from pools.sparse_feat_pool import SparseXPool
+from pools.sparse_graph_pool import SparseGPool
+from sink_utils.sink import construct_sink
 
 class EncoderBlock(nn.Module):
 
@@ -53,12 +53,12 @@ class EncoderBlock(nn.Module):
             edge_index: torch.Tensor
     ):
         
-        x = self.message_passing(x, edge_index)
-        x_skip = x
 
         H = self.message_passing(x, edge_index)
 
-        f_init = self.initializer.initialize(edge_index = edge_index, num_nodes = H.size(0))
+        x_skip = H
+
+        f_init = self.initializer.initialize(edge_index = edge_index, reference = H)
 
         f = self.emhead(H, f_init)
 
@@ -68,7 +68,7 @@ class EncoderBlock(nn.Module):
 
         SINK = hard_p + soft_p - soft_p.detach()
 
-        X_pool = self.Xpool(x, node, candidate, SINK, num_sinks)
+        X_pool = self.Xpool(H, node, candidate, SINK, num_sinks)
         pooled_edge_index = self.Gpool(edge_index, sink_index, num_sinks)
 
         return X_pool, pooled_edge_index, sink_index, num_sinks, x_skip
