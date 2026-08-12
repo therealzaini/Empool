@@ -38,6 +38,7 @@ class EncoderBlock(nn.Module):
         )
 
         self.initializer = TensorInitializer(initializer_alpha, initializer_iterations)
+        self.register_buffer("_f_init", None, persistent=False)
 
 
         self.emhead = Emhead(in_channels = out_channels, hidden_channels = max(1, out_channels // 2))
@@ -66,9 +67,11 @@ class EncoderBlock(nn.Module):
 
         x_skip = H
 
-        f_init = self.initializer.initialize(edge_index = edge_index, reference = H)
 
-        f = self.emhead(H, f_init)
+        if self._f_init is None or self._f_init.numel() != H.size(0):
+            self._f_init = self.initializer.initialize(edge_index=edge_index, reference=H)
+        
+        f = self.emhead(H, self._f_init)
 
         reg_loss = self.regulizer(
             f,
