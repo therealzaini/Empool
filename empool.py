@@ -21,6 +21,8 @@ class Empool(nn.Module):
         backtracking_iterations: int = 1,
         surrogate_tau: float = 1.0,
         pooling_eps: float = 1e-8,
+        morse_xi: float = 0.0,
+        morse_lambda: float = 0.0
     ):
         super().__init__()
 
@@ -44,6 +46,8 @@ class Empool(nn.Module):
             backtracking_iterations=backtracking_iterations,
             surrogate_tau=surrogate_tau,
             pooling_eps=pooling_eps,
+            morse_xi = morse_xi,
+            morse_lambda=morse_lambda
         )
 
         self.bottleneck = nn.Identity()
@@ -63,7 +67,7 @@ class Empool(nn.Module):
         return_stats: bool = False,
     ):
 
-        x, edge_index, state_stack, stats = self.encoder(
+        x, edge_index, state_stack, stats, reg_loss = self.encoder(
             x,
             edge_index,
         )
@@ -76,6 +80,6 @@ class Empool(nn.Module):
         )
 
         if return_stats:
-            return x, stats
+            return x, stats, reg_loss
 
-        return x
+        return x, reg_loss

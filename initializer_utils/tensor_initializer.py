@@ -61,7 +61,6 @@ class TensorInitializer:
             minlength=num_nodes,
         )
 
-        d_max = degree.max().item()
 
         # Random Gaussian seed
         x_seed = torch.randn(

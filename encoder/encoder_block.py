@@ -8,6 +8,7 @@ from sink_utils.sink_ste import LocalizedHeatDissipationSurrogate as STE
 from pools.sparse_feat_pool import SparseXPool
 from pools.sparse_graph_pool import SparseGPool
 from sink_utils.sink import construct_sink
+from utils.regulizer import EmRegulizer
 
 class EncoderBlock(nn.Module):
 
@@ -22,7 +23,9 @@ class EncoderBlock(nn.Module):
             initializer_iterations: int = 5,
             backtracking_iterations: int = 1,
             surrogate_temperature: float = 1.0,
-            pooling_eps: float = 1e-8
+            pooling_eps: float = 1e-8,
+            morse_xi: float = 0.0,
+            morse_lambda: float = 0.0
     ):
         super().__init__()
 
@@ -46,6 +49,11 @@ class EncoderBlock(nn.Module):
 
         self.backtracking_iter = backtracking_iterations
 
+        self.regulizer = EmRegulizer(
+            xi=morse_xi,
+            lambda_var=morse_lambda,
+        )
+
 
     def forward(
             self,
@@ -62,6 +70,11 @@ class EncoderBlock(nn.Module):
 
         f = self.emhead(H, f_init)
 
+        reg_loss = self.regulizer(
+            f,
+            edge_index,
+        )
+
         sink_index, num_sinks = construct_sink(edge_index, x.size(0), f, self.backtracking_iter)
 
         node, candidate, soft_p, hard_p = self.ste(edge_index, f, sink_index)
@@ -71,7 +84,7 @@ class EncoderBlock(nn.Module):
         X_pool = self.Xpool(H, node, candidate, SINK, num_sinks)
         pooled_edge_index = self.Gpool(edge_index, sink_index, num_sinks)
 
-        return X_pool, pooled_edge_index, sink_index, num_sinks, x_skip
+        return X_pool, pooled_edge_index, sink_index, num_sinks, x_skip, reg_loss
 
 
         

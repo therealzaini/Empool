@@ -22,6 +22,8 @@ class MultiEncoder(nn.Module):
             backtracking_iterations: int = 1,
             surrogate_tau: float = 1.0,
             pooling_eps: float = 1e-8,
+            morse_xi: float = 0.0,
+            morse_lambda: float = 0.0
     ):
         super().__init__()
         
@@ -55,7 +57,9 @@ class MultiEncoder(nn.Module):
                 initializer_iterations = initializer_iterations,
                 backtracking_iterations = backtracking_iterations,
                 surrogate_temperature = surrogate_tau,
-                pooling_eps = pooling_eps
+                pooling_eps = pooling_eps,
+                morse_xi=morse_xi,
+                morse_lambda=morse_lambda
             )
 
             encoder_blocks.append(enc_block)
@@ -69,6 +73,7 @@ class MultiEncoder(nn.Module):
             edge_index: torch.Tensor
     ):
         state_stack = []
+        reg_losses = []
 
         current_x, current_edge_index = x, edge_index
 
@@ -82,13 +87,14 @@ class MultiEncoder(nn.Module):
 
             node_count = current_x.size(0)
 
-            current_x, current_edge_index, sink_index, num_sinks, x_skip = block(current_x, current_edge_index)
+            current_x, current_edge_index, sink_index, num_sinks, x_skip, reg_loss = block(current_x, current_edge_index)
 
             ratio = num_sinks / node_count
 
             node_count_per_layer.append(node_count)
             sink_count_per_layer.append(num_sinks)
             sink_ratios.append(ratio)
+            reg_losses.append(reg_loss)
 
             state_stack.append(EncoderState(x_skip, current_edge_index, sink_index, num_sinks))
 
@@ -97,5 +103,6 @@ class MultiEncoder(nn.Module):
         global_sink_ratio = bottlneck_node_count / num_input_nodes
 
         stats = TopologyStats(node_count_per_layer, sink_count_per_layer, sink_ratios, global_sink_ratio)
+        total_reg_loss = torch.stack(reg_losses).sum()
 
-        return current_x, current_edge_index, state_stack, stats
+        return current_x, current_edge_index, state_stack, stats, total_reg_loss
