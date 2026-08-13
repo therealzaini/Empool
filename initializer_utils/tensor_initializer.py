@@ -46,11 +46,13 @@ class TensorInitializer:
     def initialize(
         self,
         edge_index: torch.Tensor,
-        reference: torch.Tensor,
+        num_nodes,
+        device,
+        dtype
     ):
-        num_nodes = reference.size(0)
-        device = reference.device
-        dtype = reference.dtype
+        num_nodes = num_nodes
+        device = device
+        dtype = dtype
 
         # Degrees are integer-valued, but are only used
         # to determine d_max.

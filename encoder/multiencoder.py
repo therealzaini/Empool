@@ -53,13 +53,13 @@ class MultiEncoder(nn.Module):
                 layer_type = layer_type,
                 heads = heads,
                 dropout = dropout,
-                initializer_alpha = initializer_alpha,
-                initializer_iterations = initializer_iterations,
                 backtracking_iterations = backtracking_iterations,
                 surrogate_temperature = surrogate_tau,
                 pooling_eps = pooling_eps,
                 morse_xi=morse_xi,
-                morse_lambda=morse_lambda
+                morse_lambda=morse_lambda,
+                initializer_alpha=initializer_alpha,
+                initializer_iterations=initializer_iterations
             )
 
             encoder_blocks.append(enc_block)
