@@ -83,9 +83,14 @@ class EncoderBlock(nn.Module):
             edge_index,
         )
 
-        sink_index, num_sinks = construct_sink(edge_index, x.size(0), f, self.backtracking_iter)
+        sink_index, sink_nodes, num_sinks = construct_sink(edge_index, x.size(0), f, self.backtracking_iter)
 
-        node, candidate, soft_p, hard_p = self.ste(edge_index, f, sink_index)
+        node, candidate, soft_p, hard_p = self.ste(
+            edge_index=edge_index,
+            morse_values=f,
+            sink_index=sink_index,
+            sink_nodes=sink_nodes,
+        )
 
         SINK = hard_p + soft_p - soft_p.detach()
 

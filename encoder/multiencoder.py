@@ -87,7 +87,28 @@ class MultiEncoder(nn.Module):
 
             node_count = current_x.size(0)
 
-            current_x, current_edge_index, sink_index, num_sinks, x_skip, reg_loss = block(current_x, current_edge_index)
+            fine_edge_index = current_edge_index
+
+            (
+                current_x,
+                current_edge_index,
+                sink_index,
+                num_sinks,
+                x_skip,
+                reg_loss,
+            ) = block(
+                current_x,
+                current_edge_index,
+            )
+
+            state_stack.append(
+                EncoderState(
+                    x_skip=x_skip,
+                    edge_index=fine_edge_index,
+                    sink_index=sink_index,
+                    num_sinks=num_sinks,
+                )
+            )
 
             ratio = num_sinks / node_count
 
@@ -95,8 +116,6 @@ class MultiEncoder(nn.Module):
             sink_count_per_layer.append(num_sinks)
             sink_ratios.append(ratio)
             reg_losses.append(reg_loss)
-
-            state_stack.append(EncoderState(x_skip, current_edge_index, sink_index, num_sinks))
 
         bottlneck_node_count = current_x.size(0)
 

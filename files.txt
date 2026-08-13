@@ -1,27 +1,1308 @@
 .
 ├── decoder
 │   ├── decoder_block.py
-│   └── multidecoder.py
+│   ├── __init__.py
+│   ├── multidecoder.py
+│   └── __pycache__
+│       ├── decoder_block.cpython-314.pyc
+│       ├── __init__.cpython-314.pyc
+│       └── multidecoder.cpython-314.pyc
+├── empool.egg-info
+│   ├── dependency_links.txt
+│   ├── PKG-INFO
+│   ├── requires.txt
+│   ├── SOURCES.txt
+│   └── top_level.txt
 ├── empool.py
 ├── encoder
 │   ├── emhead.py
 │   ├── encoder_block.py
 │   ├── encoder_state.py
-│   └── multiencoder.py
+│   ├── __init__.py
+│   ├── multiencoder.py
+│   └── __pycache__
+│       ├── emhead.cpython-314.pyc
+│       ├── encoder_block.cpython-314.pyc
+│       ├── encoder_state.cpython-314.pyc
+│       ├── __init__.cpython-314.pyc
+│       └── multiencoder.cpython-314.pyc
+├── files.txt
 ├── initializer_utils
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-314.pyc
+│   │   └── tensor_initializer.cpython-314.pyc
 │   └── tensor_initializer.py
+├── __init__.py
 ├── message_passing
-│   └── message_passing.py
+│   ├── __init__.py
+│   ├── message_passing.py
+│   └── __pycache__
+│       ├── __init__.cpython-314.pyc
+│       └── message_passing.cpython-314.pyc
 ├── pools
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-314.pyc
+│   │   ├── sparse_feat_pool.cpython-314.pyc
+│   │   └── sparse_graph_pool.cpython-314.pyc
 │   ├── sparse_feat_pool.py
 │   └── sparse_graph_pool.py
+├── __pycache__
+│   └── empool.cpython-314.pyc
+├── pyproject.toml
 ├── README.md
 ├── sink_utils
+│   ├── __init__.py
+│   ├── __pycache__
+│   │   ├── __init__.cpython-314.pyc
+│   │   └── sink_ste.cpython-314.pyc
 │   ├── sink.py
 │   └── sink_ste.py
+├── test.py
 ├── unpools
-│   └── feat_unpool.py
+│   ├── feat_unpool.py
+│   ├── __init__.py
+│   └── __pycache__
+│       ├── feat_unpool.cpython-314.pyc
+│       └── __init__.cpython-314.pyc
 └── utils
+    ├── __init__.py
+    ├── regulizer.py
     └── topology_stats.py
 
-9 directories, 17 files
+
+decoder_block.py
+
+import torch
+import torch.nn as nn
+
+from unpools.feat_unpool import XUnpool
+from message_passing.message_passing import MessagePassing
+
+class DecoderBlock(nn.Module):
+    def __init__(
+                self,
+                coarse_dimension: int,
+                skip_dimension: int,
+                out_channels: int,
+                layer_type: str,
+                heads: int,
+                dropout: float
+        ):
+            super().__init__()
+
+            self.coarse = coarse_dimension
+            self.skip = skip_dimension
+            self.out_channels = out_channels
+
+            self.unpool = XUnpool()
+
+            self.message_passing = MessagePassing(
+                in_channels = coarse_dimension + skip_dimension,
+                out_channels = out_channels,
+                layer_type = layer_type,
+                heads = heads,
+                dropout = dropout,
+            )
+
+    def forward(
+                self,
+                x_coarse: torch.Tensor,
+                edge_index: torch.Tensor,
+                sink_index: torch.Tensor,
+                x_skip: torch.Tensor
+    ) -> torch.Tensor:
+
+        x_unpooled = self.unpool(x_coarse, sink_index)
+
+        if x_unpooled.size(0) != x_skip.size(0):
+             raise RuntimeError("Dimension mismatch: cannot concatenate features.")
+
+        x = torch.cat(
+             [x_unpooled, x_skip],
+             dim = -1
+        )
+
+        x = self.message_passing(x, edge_index)
+
+        return x
+
+
+multidecoder.py
+
+import torch
+import torch.nn as nn
+
+from typing import List
+
+from decoder.decoder_block import DecoderBlock
+from encoder.encoder_state import EncoderState
+
+class MultiDecoder(nn.Module):
+    def __init__(
+            self,
+            encoder_dim: List[int],
+            decoder_dim: List[int],
+            layer_type: str,
+            heads: int,
+            dropout: float
+    ):
+        super().__init__()
+
+        self.encoders_dim = encoder_dim
+        num_encoding_steps = len(self.encoders_dim)
+
+        self.decoders_dim = decoder_dim
+
+        blocks = []
+
+        for decoder_index in range(num_encoding_steps):
+
+            encoder_index = num_encoding_steps - 1 - decoder_index
+
+            coarse_channels = self.encoders_dim[encoder_index] if decoder_index == 0 else decoder_dim[decoder_index - 1]
+
+            skip_channels = encoder_dim[encoder_index]
+            out_channels = decoder_dim[decoder_index]
+
+            blocks.append(
+                DecoderBlock(
+                    coarse_dimension = coarse_channels,
+                    skip_dimension = skip_channels,
+                    out_channels = out_channels,
+                    layer_type = layer_type,
+                    heads = heads,
+                    dropout = dropout
+                )
+            )
+
+        self.blocks = nn.ModuleList(blocks)
+
+
+    def forward(
+            self,
+            x_bott: torch.Tensor,
+            state_stack: List[EncoderState]
+    ) -> torch.Tensor:
+
+        x = x_bott
+
+        for block in self.blocks:
+            state = state_stack.pop()
+
+            x = block(
+                x_coarse = x,
+                edge_index = state.edge_index,
+                sink_index = state.sink_index,
+                x_skip = state.x_skip
+            )
+
+        return x
+
+emhead.py
+
+import torch
+import torch.nn as nn
+
+from typing import Optional, cast
+
+from initializer_utils.tensor_initializer import TensorInitializer
+
+class Emhead(nn.Module):
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int | None = None,
+        dropout: float = 0.0,
+        initializer: TensorInitializer | None = None,
+    ):
+        super().__init__()
+
+        if in_channels <= 0:
+            raise ValueError(
+                "in_channels must be positive."
+            )
+
+        if hidden_channels is None:
+            hidden_channels = max(
+                1,
+                in_channels // 2,
+            )
+
+        if hidden_channels <= 0:
+            raise ValueError(
+                "hidden_channels must be positive."
+            )
+
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+
+        # ---------------------------------------------------------
+        # First MLP layer.
+        # ---------------------------------------------------------
+
+        self.input_layer = nn.Linear(
+            in_channels,
+            hidden_channels,
+        )
+
+        self.activation = nn.ELU()
+
+        self.dropout = nn.Dropout(
+            p=dropout
+        )
+
+        # ---------------------------------------------------------
+        # W2 is deliberately NOT nn.Linear(hidden, 1).
+        #
+        # We need a separately controlled W2 whose initial value
+        # is exactly zero.
+        #
+        # Shape:
+        #
+        #     [1, hidden_channels]
+        # ---------------------------------------------------------
+
+        self.output_weight = nn.Parameter(
+            torch.zeros(
+                1,
+                hidden_channels,
+            )
+        )
+
+        # ---------------------------------------------------------
+        # Cached node-wise b2.
+        #
+        # It is a BUFFER, not a learnable parameter.
+        #
+        # b2[l] corresponds to the Morse initialization at the
+        # current encoder level.
+        # ---------------------------------------------------------
+
+        self.register_buffer(
+            "_b2",
+            None,
+            persistent=True,
+        )
+
+        # Keep initializer as a component of the head.
+        self.initializer = initializer
+
+    @property
+    def b2(self):
+        """Return the currently cached Morse offset."""
+        return self._b2
+
+    def _initialize_b2(
+        self,
+        edge_index: torch.Tensor,
+        num_nodes: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ):
+        """
+        Generate and cache the node-wise Morse initialization.
+
+        IMPORTANT:
+        This is called only when there is no cached b2 or when
+        the current graph requires a different number of entries.
+        """
+
+        if self.initializer is None:
+            # Explicit fallback for experiments where we want
+            # zero initialization.
+            b2 = torch.zeros(
+                num_nodes,
+                device=device,
+                dtype=dtype,
+            )
+
+        else:
+            b2 = self.initializer.initialize(
+                edge_index=edge_index,
+                num_nodes=num_nodes,
+                device=device,
+                dtype=dtype,
+            )
+
+        # Store as a fixed buffer.
+        self._b2 = b2.detach()
+
+    def _ensure_b2(
+        self,
+        edge_index: torch.Tensor,
+        num_nodes: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ):
+        """
+        Ensure that a compatible cached initialization exists.
+        """
+
+        needs_initialization = (
+            self._b2 is None
+            or self._b2.numel() != num_nodes
+            or self._b2.device != device
+            or self._b2.dtype != dtype
+        )
+
+        if needs_initialization:
+            self._initialize_b2(
+                edge_index=edge_index,
+                num_nodes=num_nodes,
+                device=device,
+                dtype=dtype,
+            )
+
+    def forward(
+        self,
+        H: torch.Tensor,
+        edge_index: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        H:
+            Node representation [N, F].
+
+        edge_index:
+            Current graph connectivity [2, E].
+
+        Returns
+        -------
+        f:
+            Morse vector [N].
+
+        Computes:
+
+            f = W2 phi(W1 H + b1) + b2
+        """
+
+        if H.dim() != 2:
+            raise ValueError(
+                "H must have shape [num_nodes, num_features]."
+            )
+
+        num_nodes = H.size(0)
+
+        # ---------------------------------------------------------
+        # Make sure b2 exists and matches this graph's resolution.
+        # ---------------------------------------------------------
+
+        self._ensure_b2(
+            edge_index=edge_index,
+            num_nodes=num_nodes,
+            device=H.device,
+            dtype=H.dtype,
+        )
+
+        # ---------------------------------------------------------
+        # Learned hidden representation.
+        # ---------------------------------------------------------
+
+        hidden = self.input_layer(H)
+
+        hidden = self.activation(hidden)
+
+        hidden = self.dropout(hidden)
+
+        # ---------------------------------------------------------
+        # Learned Morse correction.
+        #
+        # W2 initially equals zero, so this is initially zero.
+        # ---------------------------------------------------------
+
+        correction = (
+            hidden
+            @ self.output_weight.t()
+        ).squeeze(-1)
+
+        # ---------------------------------------------------------
+        # Final Morse vector.
+        # ---------------------------------------------------------
+
+        f = correction + self._b2
+
+        return f
+
+encoder_block.py
+
+import torch
+import torch.nn as nn
+
+from message_passing.message_passing import MessagePassing
+from encoder.emhead import Emhead
+from sink_utils.sink_ste import LocalizedHeatDissipationSurrogate as STE
+from pools.sparse_feat_pool import SparseXPool
+from pools.sparse_graph_pool import SparseGPool
+from sink_utils.sink import construct_sink
+from utils.regulizer import EmRegulizer
+from initializer_utils.tensor_initializer import TensorInitializer
+
+class EncoderBlock(nn.Module):
+
+    def __init__(
+            self,
+            in_channels: int,
+            out_channels: int,
+            layer_type: str,
+            heads: int,
+            dropout: float,
+            backtracking_iterations: int = 1,
+            surrogate_temperature: float = 1.0,
+            pooling_eps: float = 1e-8,
+            morse_xi: float = 0.0,
+            morse_lambda: float = 0.0,
+            initializer_iterations = 1,
+            initializer_alpha = 0.0
+    ):
+        super().__init__()
+
+        self.message_passing = MessagePassing(
+            in_channels = in_channels,
+            out_channels = out_channels,
+            layer_type = layer_type,
+            heads = heads,
+            dropout = dropout
+        )
+
+
+
+        initializer = TensorInitializer(
+            initializer_alpha,
+            initializer_iterations,
+        )
+
+        self.emhead = Emhead(
+            in_channels=out_channels,
+            hidden_channels=max(1, out_channels // 2),
+            dropout=dropout,
+            initializer=initializer,
+        )
+
+        self.ste = STE(tau = surrogate_temperature)
+
+        self.Xpool = SparseXPool(eps = pooling_eps)
+        self.Gpool = SparseGPool(True)
+
+        self.backtracking_iter = backtracking_iterations
+
+        self.regulizer = EmRegulizer(
+            xi=morse_xi,
+            lambda_var=morse_lambda,
+        )
+
+
+    def forward(
+            self,
+            x: torch.Tensor,
+            edge_index: torch.Tensor
+    ):
+        
+
+        H = self.message_passing(x, edge_index)
+
+        x_skip = H
+
+        f = self.emhead(H, edge_index = edge_index)
+
+
+        reg_loss = self.regulizer(
+            f,
+            edge_index,
+        )
+
+        sink_index, num_sinks = construct_sink(edge_index, x.size(0), f, self.backtracking_iter)
+
+        node, candidate, soft_p, hard_p = self.ste(edge_index, f, sink_index)
+
+        SINK = hard_p + soft_p - soft_p.detach()
+
+        X_pool = self.Xpool(H, node, candidate, SINK, num_sinks)
+        pooled_edge_index = self.Gpool(edge_index, sink_index, num_sinks)
+
+        return X_pool, pooled_edge_index, sink_index, num_sinks, x_skip, reg_loss
+
+encoder_state.py
+
+from dataclasses import dataclass
+import torch 
+import torch.nn as nn
+
+@dataclass
+class EncoderState:
+    x_skip: torch.Tensor
+    edge_index: torch.Tensor
+    sink_index: torch.Tensor
+    num_sinks: int
+
+multiencoder.py
+
+import torch
+import torch.nn as nn
+
+from typing import List
+
+from encoder.encoder_block import EncoderBlock
+from encoder.encoder_state import EncoderState
+from utils.topology_stats import TopologyStats
+
+class MultiEncoder(nn.Module):
+
+    def __init__(
+            self,
+            in_channels: int,
+            hidden_channels: List[int],
+            num_layers: int,
+            layer_type: str = "gcn",
+            heads: int = 1,
+            dropout: float = 0.0,
+            initializer_alpha: float = 0.01,
+            initializer_iterations: int = 10,
+            backtracking_iterations: int = 1,
+            surrogate_tau: float = 1.0,
+            pooling_eps: float = 1e-8,
+            morse_xi: float = 0.0,
+            morse_lambda: float = 0.0
+    ):
+        super().__init__()
+        
+        if num_layers <= 0:
+            raise ValueError(
+                "num_layers must be positive."
+            )
+
+        if len(hidden_channels) != num_layers:
+            raise ValueError(
+                "hidden_channels must contain exactly "
+                "num_layers entries."
+            )
+
+        self.num_layers = num_layers
+
+        encoder_blocks = []
+
+        current = in_channels
+
+        for layer in range(num_layers):
+            nex = hidden_channels[layer]
+
+            enc_block = EncoderBlock(
+                in_channels = current,
+                out_channels = nex,
+                layer_type = layer_type,
+                heads = heads,
+                dropout = dropout,
+                backtracking_iterations = backtracking_iterations,
+                surrogate_temperature = surrogate_tau,
+                pooling_eps = pooling_eps,
+                morse_xi=morse_xi,
+                morse_lambda=morse_lambda,
+                initializer_alpha=initializer_alpha,
+                initializer_iterations=initializer_iterations
+            )
+
+            encoder_blocks.append(enc_block)
+            current = nex
+
+        self.blocks = nn.ModuleList(encoder_blocks)
+
+    def forward(
+            self,
+            x: torch.Tensor,
+            edge_index: torch.Tensor
+    ):
+        state_stack = []
+        reg_losses = []
+
+        current_x, current_edge_index = x, edge_index
+
+
+        num_input_nodes = current_x.size(0)
+        node_count_per_layer = []
+        sink_count_per_layer = []
+        sink_ratios = []
+
+        for block in self.blocks:
+
+            node_count = current_x.size(0)
+
+            current_x, current_edge_index, sink_index, num_sinks, x_skip, reg_loss = block(current_x, current_edge_index)
+
+            ratio = num_sinks / node_count
+
+            node_count_per_layer.append(node_count)
+            sink_count_per_layer.append(num_sinks)
+            sink_ratios.append(ratio)
+            reg_losses.append(reg_loss)
+
+            state_stack.append(EncoderState(x_skip, current_edge_index, sink_index, num_sinks))
+
+        bottlneck_node_count = current_x.size(0)
+
+        global_sink_ratio = bottlneck_node_count / num_input_nodes
+
+        stats = TopologyStats(node_count_per_layer, sink_count_per_layer, sink_ratios, global_sink_ratio)
+        total_reg_loss = torch.stack(reg_losses).sum()
+
+        return current_x, current_edge_index, state_stack, stats, total_reg_loss
+
+tensor_initializer.py
+
+import torch
+from torch import Tensor
+
+class TensorInitializer:
+
+    def __init__(
+            self,
+            alpha: float,
+            num_iterations: int
+    ):
+
+        if alpha <= 0:
+            raise ValueError("alpha must be strictly positive.")
+        if num_iterations < 0:
+            raise ValueError("num_iterations must be non-negative")
+
+        self.alpha = alpha
+        self.num_iter = num_iterations
+
+
+    @staticmethod
+    def _validate_alpha_and_get_degree(
+        alpha: float,
+        edge_index: Tensor,
+        num_nodes: int
+    ):
+        row = edge_index[0]
+
+        degree = torch.bincount(
+            row,
+            minlength = num_nodes
+        )
+
+        d_max = int(degree.max().item())
+
+        if d_max == 0:
+            return degree
+
+        upper_bound = 1.0 / (2.0 * d_max)
+
+        if alpha >= upper_bound:
+            raise ValueError(f"Value of alpha out of bounds. Choose a strictly positive value no bigger than 1/2d_max = {upper_bound}.")
+
+        return degree
+
+    def initialize(
+        self,
+        edge_index: torch.Tensor,
+        num_nodes,
+        device,
+        dtype
+    ):
+        num_nodes = num_nodes
+        device = device
+        dtype = dtype
+
+        # Degrees are integer-valued, but are only used
+        # to determine d_max.
+        row = edge_index[0]
+
+        degree = torch.bincount(
+            row,
+            minlength=num_nodes,
+        )
+
+
+        # Random Gaussian seed
+        x_seed = torch.randn(
+            num_nodes,
+            device=device,
+            dtype=dtype,
+        )
+
+        # Center
+        x_seed = x_seed - x_seed.mean()
+
+        x_seed = x_seed / x_seed.norm(p=2).clamp_min(torch.finfo(dtype).eps)
+
+        row, col = edge_index
+
+        for _ in range(self.num_iter):
+
+            Ax = torch.zeros_like(x_seed)
+            Ax.scatter_add_(
+                0,
+                row,
+                x_seed[col]
+            )
+
+            Dx = degree * x_seed
+
+            x_seed = x_seed - self.alpha * (Dx - Ax)
+
+            x_seed = x_seed / x_seed.norm(p = 2).clamp_min(torch.finfo(dtype).eps)
+
+        return x_seed
+
+message_passing.py
+
+import torch
+import torch.nn as nn
+
+class MessagePassing(nn.Module):
+
+    def __init__(
+            self,
+            in_channels: int,
+            out_channels: int,
+            layer_type: str,
+            heads: int,
+            dropout: float,
+            **kwargs
+    ):
+        super().__init__()
+
+        layer_type = layer_type.lower()
+
+        if layer_type == 'gcn':
+            from torch_geometric.nn import GCNConv
+            self.conv = GCNConv(in_channels, out_channels, **kwargs)
+
+        elif layer_type == 'gat':
+            from torch_geometric.nn import GATConv
+            self.conv = GATConv(in_channels, out_channels, heads, dropout = dropout, **kwargs)
+
+        else:
+            raise ValueError(f"{layer_type} layer type invalid or unimplemented.")
+
+        self.norm = nn.LayerNorm(out_channels * heads if layer_type == 'gat' else out_channels)
+
+        self.activation = nn.ELU()
+
+
+    def forward(
+            self,
+            X,
+            edge_index
+    ):
+        X = self.conv(X, edge_index)
+        X = self.norm(X)
+        X = self.activation(X)
+
+        return X
+
+sparse_feat_pool.py
+
+
+import torch
+import torch.nn as nn
+
+class SparseXPool(nn.Module):
+
+    def __init__(self, eps: float = 1e-8):
+        super().__init__()
+        self.epsilon = eps
+
+    def forward(
+            self,
+            X: torch.Tensor,
+            node: torch.Tensor,
+            candidate: torch.Tensor,
+            weight: torch.Tensor,
+            num_sinks: int
+    ) -> torch.Tensor:
+
+        device, dtype = X.device, X.dtype
+
+        weighted_X = (X[node] * weight.unsqueeze(-1))
+
+        X_pool = torch.zeros(num_sinks, X.size(-1), device = device, dtype = dtype)
+
+        sink_index = candidate.unsqueeze(-1).expand_as(weighted_X)
+
+        X_pool.scatter_add_(0, sink_index, weighted_X)
+
+        D_pool = torch.zeros(num_sinks, device = device, dtype = dtype)
+
+        D_pool.scatter_add_(0, candidate, weight)
+
+        X_pool = X_pool / D_pool.clamp_min(self.epsilon).unsqueeze(-1)
+
+        return X_pool
+
+sparse_graph_pool.py
+        
+import torch
+import torch.nn as nn
+from torch_geometric.utils import coalesce
+
+class SparseGPool(nn.Module):
+
+    def __init__(self, remove_self_loops: bool = True):
+        super().__init__()
+        self.remove_self_loops = remove_self_loops
+
+    def forward(
+            self,
+            edge_index: torch.Tensor,
+            sink_index: torch.Tensor,
+            num_sinks: int
+    ) -> torch.Tensor:
+
+
+        row, col = edge_index
+
+        row_pool, col_pool = sink_index[row], sink_index[col]
+
+        if self.remove_self_loops:
+            mask = row_pool != col_pool
+
+            row_pool = row_pool[mask]
+            col_pool = col_pool[mask]
+
+        pooled_edge_index = torch.stack([row_pool, col_pool], dim = 0)
+
+        pooled_edge_index = coalesce(pooled_edge_index, num_nodes = num_sinks)
+
+        return pooled_edge_index
+
+
+sink_ste.py
+
+import torch
+import torch.nn as nn
+
+class LocalizedHeatDissipationSurrogate(nn.Module):
+
+    def __init__(
+            self,
+            tau: float = 1.0,
+            max_candidates: int = 8
+    ):
+        
+        super().__init__()
+
+        if tau <= 0:
+            raise ValueError("tau must be strictly positive.")
+
+        if max_candidates < 0:
+            raise ValueError("max_candidates must be positive.")
+
+        self.tau = tau
+        self.max_candidates = max_candidates
+
+    @staticmethod
+    def _build_candidates(
+        edge_index: torch.Tensor,
+        sink_index: torch.Tensor,
+        num_nodes: int
+    ):
+
+        row, col = edge_index
+        device = sink_index.device
+
+        own_node = torch.arange(num_nodes, device = device, dtype = torch.long)
+
+        own_sink = sink_index
+
+        neighbor_node = torch.cat(
+            [row, col],
+            dim = 0
+        )
+
+        neighbor_sink = torch.cat(
+            [sink_index[col], sink_index[row]],
+            dim = 0
+        )
+
+        node = torch.cat(
+            [own_node, neighbor_node],
+            dim = 0
+        )
+
+        candidate = torch.cat(
+            [own_sink, neighbor_sink]
+        )
+
+        number_of_sinks = int(sink_index.max().item()) + 1
+
+        pair_code = (node * number_of_sinks + candidate)
+
+        pair_code = torch.unique(pair_code, sorted = False)
+
+        node = torch.div(
+            pair_code,
+            number_of_sinks,
+            rounding_mode = "floor"
+        )
+
+        candidate = (pair_code % number_of_sinks)
+
+        return node, candidate
+
+    def forward(
+            self,
+            edge_index: torch.Tensor,
+            morse_values: torch.Tensor,
+            sink_index: torch.Tensor
+    ):
+
+        device = morse_values.device
+        num_nodes = morse_values.numel()
+        dtype = morse_values.dtype
+
+        node, candidate = self._build_candidates(
+            edge_index = edge_index,
+            sink_index = sink_index,
+            num_nodes = num_nodes
+        )
+
+        score = -(morse_values[node] - morse_values[candidate]).pow(2)
+
+        max_score = torch.full(
+            (num_nodes,),
+            -torch.inf,
+            device = device,
+            dtype = dtype
+        )
+
+        max_score.scatter_reduce_(0, node, score, reduce = "amax", include_self = True)
+        e_to_the_score = torch.exp((score - max_score[node]) / self.tau)
+
+        sum_of_exps = torch.zeros(num_nodes, device = device, dtype = dtype)
+
+        sum_of_exps.scatter_add_(0, node, e_to_the_score)
+
+        soft_p = (e_to_the_score / sum_of_exps[node].clamp_min(torch.finfo(dtype).eps))
+        hard_p = (candidate == sink_index[node]).to(device)
+
+        return node, candidate, soft_p, hard_p
+
+sink.py
+
+from typing import Tuple
+
+import torch
+from torch_scatter import scatter_max
+
+def construct_sink(
+        edge_index: torch.Tensor,
+        num_nodes: int,
+        morse_values: torch.Tensor,
+        max_iterations: int = 4
+) -> Tuple[torch.Tensor, int]:
+
+    device = edge_index.device
+
+    if morse_values.ndim != 1 or morse_values.numel() != num_nodes:
+        raise ValueError("morse_values must be a 1D tensor with one value per node.")
+    if max_iterations < 0:
+        raise ValueError("max_iterations must be non-negative.")
+
+    source_node, destination_node = edge_index[0], edge_index[1]
+
+    delta_f = morse_values[source_node] - morse_values[destination_node]
+
+    max_delta_f, negative_nabla_edge_index = scatter_max(
+         delta_f,
+         source_node,
+         dim = 0,
+         dim_size = num_nodes
+    )
+
+    if edge_index.numel() == 0:
+        return torch.arange(num_nodes, device=device, dtype=torch.long), num_nodes
+
+    negative_nabla_edge_index = torch.clamp(
+         negative_nabla_edge_index,
+         min = 0,
+         max = source_node.numel() - 1
+    )
+
+    negative_nabla = destination_node[negative_nabla_edge_index]
+    negative_nabla = torch.clamp(negative_nabla, 0, num_nodes - 1)
+
+    is_critical = (max_delta_f <= 1e-5) | (negative_nabla == torch.arange(num_nodes, device = device))
+
+    parent_array = torch.where(
+         is_critical,
+         torch.arange(num_nodes, device = device, dtype = torch.long),
+         negative_nabla
+    )
+
+    for _ in range(max_iterations):
+        parent_array = parent_array[parent_array]
+
+    parent_array = torch.clamp(parent_array, 0, num_nodes - 1)
+
+    critical_nodes = torch.nonzero(is_critical, as_tuple = False).flatten()
+    critical_nodes = critical_nodes[(critical_nodes >= 0) & (critical_nodes < num_nodes)]
+
+    number_of_sinks = critical_nodes.numel()
+
+    if number_of_sinks == 0:
+        return torch.arange(num_nodes, device=device, dtype=torch.long), 0
+
+    node_to_sink = torch.full((num_nodes,), -1, dtype=torch.long, device=device)
+    node_to_sink[critical_nodes] = torch.arange(number_of_sinks, device=device)
+
+    sink_index = node_to_sink[parent_array]
+
+    unmapped_nodes = (sink_index < 0) | (sink_index >= number_of_sinks)
+
+    if unmapped_nodes.any():
+        sink_index = torch.where(
+            unmapped_nodes, 
+            torch.arange(num_nodes, device=device, dtype=torch.long) % number_of_sinks, 
+            sink_index
+        )
+
+    return sink_index, number_of_sinks    
+
+feat_unpool.py
+
+
+import torch
+import torch.nn as nn
+
+class XUnpool(nn.Module):
+
+    def forward(
+            self,
+            x_coarse: torch.Tensor,
+            sink_index: torch.Tensor
+    ) -> torch.Tensor:
+        if x_coarse.dim() != 2:
+            raise ValueError("x_coarse dimension mismatch.")
+        if sink_index.dim() != 1:
+            raise ValueError("sink_index dimension mismatch.")
+        
+        if sink_index.numel() == 0:
+            return x_coarse.new_empty(
+                (0, x_coarse.size(1))
+            )
+
+        if sink_index.min() < 0:
+            raise ValueError("sink_index contains negative values.")
+
+        if sink_index.max() >= x_coarse.size(0):
+            raise ValueError("sink_index refers to a coarse node outside the range of x_coarse.")
+
+        return x_coarse[sink_index]
+
+regulizer.py
+
+import torch
+import torch.nn as nn
+
+class EmRegulizer(nn.Module):
+    def __init__(
+        self,
+        xi: float = 0.0,
+        lambda_var: float = 0.0,
+        eps: float = 1e-8,
+        assume_symmetric: bool = True,
+    ):
+        super().__init__()
+
+        if xi < 0:
+            raise ValueError("xi must be non-negative.")
+
+        if lambda_var < 0:
+            raise ValueError(
+                "lambda_var must be non-negative."
+            )
+
+        if eps <= 0:
+            raise ValueError("eps must be positive.")
+
+        self.xi = xi
+        self.lambda_var = lambda_var
+        self.eps = eps
+        self.assume_symmetric = assume_symmetric
+
+    def forward(
+        self,
+        f: torch.Tensor,
+        edge_index: torch.Tensor,
+    ) -> torch.Tensor:
+        
+        if f.dim() != 1:
+            raise ValueError(
+                "f must have shape [num_nodes]. "
+                f"Got {tuple(f.shape)}."
+            )
+
+        if edge_index.dim() != 2 or edge_index.size(0) != 2:
+            raise ValueError(
+                "edge_index must have shape [2, num_edges]."
+            )
+
+        row, col = edge_index
+
+        diff = f[row] - f[col]
+
+        smoothness = diff.square().sum()
+
+        if self.assume_symmetric:
+            smoothness = 0.5 * smoothness
+
+
+        variance = torch.var(
+            f,
+            unbiased=False,
+        )
+
+        variance_penalty = (
+            1.0
+            / variance.clamp_min(self.eps)
+        )
+
+        loss = (
+            self.xi * smoothness
+            + self.lambda_var * variance_penalty
+        )
+
+        return loss
+
+    def components(
+        self,
+        f: torch.Tensor,
+        edge_index: torch.Tensor,
+    ):
+        row, col = edge_index
+
+        diff = f[row] - f[col]
+
+        smoothness = diff.square().sum()
+
+        if self.assume_symmetric:
+            smoothness = 0.5 * smoothness
+
+        variance = torch.var(
+            f,
+            unbiased=False,
+        )
+
+        variance_penalty = (
+            1.0
+            / variance.clamp_min(self.eps)
+        )
+
+        total = (
+            self.xi * smoothness
+            + self.lambda_var * variance_penalty
+        )
+
+        return (
+            smoothness,
+            variance,
+            variance_penalty,
+            total,
+        )
+
+topology_stats.py
+
+from dataclasses import dataclass
+from typing import List
+
+
+@dataclass
+class TopologyStats:
+    num_nodes: List[int]
+    num_sinks: List[int]
+    sink_ratios: List[float]
+    global_sink_ratio: float
+
+
+empool.py
+
+import torch
+import torch.nn as nn
+
+from typing import List
+
+from decoder.multidecoder import MultiDecoder
+from encoder.multiencoder import MultiEncoder
+
+class Empool(nn.Module):
+
+    def __init__(
+        self,
+        in_channels: int,
+        encoder_channels: List[int],
+        decoder_channels: List[int],
+        layer_type: str = "gcn",
+        heads: int = 1,
+        dropout: float = 0.0,
+        initializer_alpha: float = 0.01,
+        initializer_iterations: int = 10,
+        backtracking_iterations: int = 1,
+        surrogate_tau: float = 1.0,
+        pooling_eps: float = 1e-8,
+        morse_xi: float = 0.0,
+        morse_lambda: float = 0.0
+    ):
+        super().__init__()
+
+        num_layers = len(encoder_channels)
+
+        if len(decoder_channels) != num_layers:
+            raise ValueError(
+                "decoder_channels must have the same length "
+                "as encoder_channels."
+            )
+
+        self.encoder = MultiEncoder(
+            in_channels=in_channels,
+            hidden_channels=encoder_channels,
+            num_layers=num_layers,
+            layer_type=layer_type,
+            heads=heads,
+            dropout=dropout,
+            initializer_alpha=initializer_alpha,
+            initializer_iterations=initializer_iterations,
+            backtracking_iterations=backtracking_iterations,
+            surrogate_tau=surrogate_tau,
+            pooling_eps=pooling_eps,
+            morse_xi = morse_xi,
+            morse_lambda=morse_lambda
+        )
+
+        self.bottleneck = nn.Identity()
+
+        self.decoder = MultiDecoder(
+            encoder_dim=encoder_channels,
+            decoder_dim=decoder_channels,
+            layer_type=layer_type,
+            heads=heads,
+            dropout=dropout,
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        return_stats: bool = False,
+    ):
+
+        x, edge_index, state_stack, stats, reg_loss = self.encoder(
+            x,
+            edge_index,
+        )
+
+        x = self.bottleneck(x)
+
+        x = self.decoder(
+            x_bott=x,
+            state_stack=state_stack,
+        )
+
+        if return_stats:
+            return x, stats, reg_loss
+
+        return x, reg_loss
